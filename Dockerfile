@@ -2,6 +2,7 @@ FROM node:18-slim
 
 RUN apt-get update && apt-get install -y 
 chromium 
+chromium-driver 
 fonts-liberation 
 libasound2 
 libatk-bridge2.0-0 
@@ -33,4 +34,6 @@ COPY . .
 
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-CMD ["node", "index.js"]
+EXPOSE 3000
+
+CMD ["node","index.js"]
