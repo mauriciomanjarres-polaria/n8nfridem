@@ -5,7 +5,12 @@ const app = express();
 
 app.get('/scrape', async (req, res) => {
 
-const browser = await puppeteer.launch({
+let browser;
+let page;
+
+try {
+
+browser = await puppeteer.launch({
 executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
 headless: "new",
 args: [
@@ -16,11 +21,8 @@ args: [
 ]
 });
 
-const page = await browser.newPage();
+page = await browser.newPage();
 
-try {
-
-```
 // LOGIN
 await page.goto("https://sai.fridem.mx/ingreso", { waitUntil: "networkidle2" });
 
@@ -108,18 +110,17 @@ while (hasNextPage && safetyCounter < 100) {
 await browser.close();
 
 res.json(allData);
-```
 
 } catch (error) {
 
-```
+if (browser) {
 await browser.close();
+}
 
 res.status(500).json({
-  error: error.message,
-  url: page.url()
+error: error.message,
+url: page ? page.url() : null
 });
-```
 
 }
 
