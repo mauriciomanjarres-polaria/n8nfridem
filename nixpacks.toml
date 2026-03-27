@@ -1,0 +1,9 @@
+[variables]
+    NPM_CONFIG_UPDATE_NOTIFIER = "false"
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "false"
+
+[phases.setup]
+    nixPkgs = ["...", "nodejs", "google-chrome", "cacert"]
+
+[phases.build]
+    cmds = ["npm install"]
