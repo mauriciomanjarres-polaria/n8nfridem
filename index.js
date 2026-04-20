@@ -15,7 +15,9 @@ app.get('/scrape', async (req, res) => {
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-gpu'
+                '--disable-gpu',
+                '--ignore-certificate-errors',
+                '--ignore-certificate-errors-spki-list'
             ]
         });
 
