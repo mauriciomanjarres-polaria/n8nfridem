@@ -2,15 +2,13 @@ const express = require('express');
 const app = express();
 // Importamos la función desde la carpeta scrapers
 const { scrapeGeneral } = require('./scrapers/scrapeController');
-// const { scrapeTCI } = require('./scrapers/tciController'); // Cuando lo crees
+const { scrapeTCI } = require('./scrapers/tciController'); 
 
 app.use(express.json());
 
 // RUTAS
 app.get('/scrape', scrapeGeneral); 
-
-// Cuando tengas el otro archivo, solo agregas esto:
-// app.get('/tci', scrapeTCI); 
+app.get('/tci', scrapeTCI); 
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
