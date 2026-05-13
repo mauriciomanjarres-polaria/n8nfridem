@@ -1,4 +1,3 @@
-const puppeteer = require('puppeteer-extra');
 const puppeteer = require('puppeteer-core');
 
 
