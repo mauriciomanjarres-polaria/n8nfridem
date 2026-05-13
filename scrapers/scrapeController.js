@@ -108,8 +108,3 @@ const scrapeGeneral = async (req, res) => {
 
 // 2. IMPORTANTE: Exportamos la función para que index.js la vea
 module.exports = { scrapeGeneral };
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Scraper activo en puerto ${PORT}`);
-});
