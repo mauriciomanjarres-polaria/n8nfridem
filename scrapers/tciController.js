@@ -2,21 +2,30 @@ const puppeteer = require('puppeteer-core');
 const path = require('path');
 const fs = require('fs');
 const { google } = require('googleapis');
-require('dotenv').config(); // Cargar variables al inicio del archivo
+require('dotenv').config();
 
+/** Comillas simples en nombres rompen el parámetro `q` de Drive; se escapan según la API. */
+function escapeDriveQueryName(name) {
+    return name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
 
-async function uploadToDrive(fileName, filePath) {
-    // Usamos las variables de entorno en lugar de valores fijos
-    const FILE_ID_FIJO = process.env.GOOGLE_DRIVE_FILE_ID; 
-    
-    console.log(`☁️ Actualizando contenido en archivo fijo de Drive (ID: ${FILE_ID_FIJO})...`);
-    
+/**
+ * Sube un CSV a Drive.
+ * - Si existe GOOGLE_DRIVE_FOLDER_ID: crea o actualiza un archivo con ese nombre dentro de esa carpeta
+ *   (p. ej. https://drive.google.com/drive/folders/0AAmELIefAxCDUk9PVA → id 0AAmELIefAxCDUk9PVA).
+ * - Si no: usa GOOGLE_DRIVE_FILE_ID_<idTabla> o GOOGLE_DRIVE_FILE_ID (solo actualiza ese archivo fijo).
+ */
+async function uploadToDrive(fileName, filePath, tableId) {
+    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID?.trim();
+    const legacyFileId =
+        (tableId && process.env[`GOOGLE_DRIVE_FILE_ID_${tableId}`]) ||
+        process.env.GOOGLE_DRIVE_FILE_ID;
+
     try {
-        // Configuramos la autenticación usando las variables del .env
         const auth = new google.auth.GoogleAuth({
             credentials: {
                 client_email: process.env.GOOGLE_CLIENT_EMAIL,
-                private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'), // Corregir saltos de línea
+                private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
             },
             scopes: ['https://www.googleapis.com/auth/drive'],
         });
@@ -25,37 +34,93 @@ async function uploadToDrive(fileName, filePath) {
 
         const media = {
             mimeType: 'text/csv',
-            body: fs.createReadStream(filePath)
+            body: fs.createReadStream(filePath),
         };
 
+        if (folderId) {
+            const q = `'${escapeDriveQueryName(folderId)}' in parents and name = '${escapeDriveQueryName(fileName)}' and trashed = false`;
+            const listRes = await driveService.files.list({
+                q,
+                fields: 'files(id, name)',
+                pageSize: 5,
+                supportsAllDrives: true,
+                includeItemsFromAllDrives: true,
+            });
+
+            const existing = listRes.data.files?.[0];
+
+            if (existing?.id) {
+                console.log(`☁️ Carpeta Drive: actualizando ${fileName} (id ${existing.id})...`);
+                const response = await driveService.files.update({
+                    fileId: existing.id,
+                    media,
+                    fields: 'id',
+                    supportsAllDrives: true,
+                });
+                console.log(`✅ En Drive: ${fileName}`);
+                return response.data.id;
+            }
+
+            console.log(`☁️ Carpeta Drive: creando ${fileName} en carpeta ${folderId}...`);
+            const response = await driveService.files.create({
+                requestBody: {
+                    name: fileName,
+                    parents: [folderId],
+                    mimeType: 'text/csv',
+                },
+                media,
+                fields: 'id',
+                supportsAllDrives: true,
+            });
+            console.log(`✅ En Drive: ${fileName}`);
+            return response.data.id;
+        }
+
+        if (!legacyFileId) {
+            throw new Error(
+                `Falta destino en Drive para ${fileName}. Define GOOGLE_DRIVE_FOLDER_ID (carpeta) o GOOGLE_DRIVE_FILE_ID / GOOGLE_DRIVE_FILE_ID_<idTabla>.`
+            );
+        }
+
+        console.log(`☁️ Actualizando archivo fijo en Drive: ${fileName} (ID: ${legacyFileId})...`);
         const response = await driveService.files.update({
-            fileId: FILE_ID_FIJO,
-            media: media,
+            fileId: legacyFileId,
+            media,
             fields: 'id',
-            supportsAllDrives: true 
+            supportsAllDrives: true,
         });
-
-        console.log(`✅ Archivo reemplazado con éxito. ID en Drive: ${response.data.id}`);
+        console.log(`✅ En Drive: ${fileName}`);
         return response.data.id;
-
     } catch (error) {
-        console.error("❌ Error al actualizar el archivo en Google Drive:", error.message);
+        console.error('❌ Error en Drive:', error.message);
         throw error;
     }
 }
 
-// 1. Función exportable
 const scrapeTCI = async (req, res) => {
-    console.log("⏳ Iniciando proceso de scraping...");
+    console.log("⏳ Iniciando scraping...");
     let browser;
     let page;
+
     const downloadPath = path.resolve(__dirname, './downloads');
 
     try {
-        
+        const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID?.trim();
+        if (folderId) {
+            console.log(
+                `☁️ Drive: carpeta ${folderId} — cada CSV es un archivo aparte (crear o actualizar por nombre).`
+            );
+        } else {
+            console.warn(
+                '☁️ Drive: no hay GOOGLE_DRIVE_FOLDER_ID. Sin carpeta, solo se usa GOOGLE_DRIVE_FILE_ID_* / GOOGLE_DRIVE_FILE_ID y varias tablas pueden pisar el mismo archivo. Para 7 archivos independientes, define GOOGLE_DRIVE_FOLDER_ID en .env.'
+            );
+        }
+
         await new Promise(r => setTimeout(r, 25000)); 
-        // Asegurar que la carpeta de descargas existe
-        if (!fs.existsSync(downloadPath)) { fs.mkdirSync(downloadPath); }
+
+        if (!fs.existsSync(downloadPath)) {
+            fs.mkdirSync(downloadPath);
+        }
 
         browser = await puppeteer.launch({
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
@@ -66,31 +131,27 @@ const scrapeTCI = async (req, res) => {
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--ignore-certificate-errors',
-                '--ignore-certificate-errors-spki-list',
                 '--start-maximized'
             ]
         });
 
         page = await browser.newPage();
         await page.setViewport({ width: 1920, height: 1080 });
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-        // Configurar comportamiento de descarga en el servidor
         const client = await page.target().createCDPSession();
         await client.send('Page.setDownloadBehavior', {
             behavior: 'allow',
-            downloadPath: downloadPath
+            downloadPath
         });
 
-        // --- LÓGICA DE AUTOMATIZACIÓN ---
-        console.log("🚀 Navegando a Quickbase...");
+        // LOGIN
+        console.log("🔐 Login...");
         await page.goto("https://aortizdemontellanoarevalo.quickbase.com/db/btcn3qu85?a=appoverview", { 
             waitUntil: "networkidle2" 
         });
 
-        // Login
         const userSelector = 'input#login-userid, input[name="loginid"]';
-        await page.waitForSelector(userSelector, { visible: true, timeout: 20000 });
+        await page.waitForSelector(userSelector, { visible: true });
         await page.type(userSelector, 'santiago@complexity.capital', { delay: 30 });
         await page.type('input[type="password"]', 'C0mpl3x1tyJBR2026', { delay: 30 });
 
@@ -99,71 +160,104 @@ const scrapeTCI = async (req, res) => {
             page.waitForNavigation({ waitUntil: "networkidle0" })
         ]);
 
-        await new Promise(r => setTimeout(r, 6000)); 
+        await new Promise(r => setTimeout(r, 5000));
 
-        // Menú More e Import/Export
-        await page.evaluate(() => {
-            const more = Array.from(document.querySelectorAll('a, button')).find(el => el.innerText.includes('More'));
-            if (more) more.click();
-        });
-        
-        const ieSelector = '#importExportLink';
-        await page.waitForSelector(ieSelector, { visible: true });
-        await page.click(ieSelector);
+        // Tablas exportadas por separado; cada una queda como <nombre>.csv en ./downloads (no se borran tras Drive)
+        const tablas = [
+            { nombre: 'Detalle_Movimientos_Palets', id: 'btuceb9js' },
+            { nombre: 'Compras_Especiales_Fruta', id: 'btuccx2gk' },
+            { nombre: 'Ventas', id: 'btcn3qvb5' },
+            { nombre: 'Detalle_Ventas', id: 'btvkvvvwh' },
+            { nombre: 'Catalogo_Productos', id: 'btsi2wfny' },
+            { nombre: 'Clientes', id: 'btcn3qvby' },
+            { nombre: 'Proveedor', id: 'btcn3qvcb' },
+        ];
 
-        // Selección de exportación
-        const radioLabel = 'xpath/.//label[contains(., "Export a table to a file")]';
-        await page.waitForSelector(radioLabel, { visible: true });
-        await page.click(radioLabel);
+        const resultados = [];
 
-        // Seleccionar tabla
-        await page.waitForSelector('#tablePicker', { visible: true });
-        await page.select('#tablePicker', 'btvkvvvwh'); 
+        for (const tabla of tablas) {
+            console.log(`📥 Exportando: ${tabla.nombre}`);
 
-        // Ejecutar descarga
-        const finalBtnSelector = '#submitButton';
-        await page.waitForSelector(finalBtnSelector, { visible: true });
-        await page.evaluate((sel) => document.querySelector(sel).click(), finalBtnSelector);
+            await page.goto("https://aortizdemontellanoarevalo.quickbase.com/db/btcn3qu85?a=appoverview", { 
+                waitUntil: "networkidle2" 
+            });
 
-        // Espera de descarga (ajustada para entornos de servidor)
-        console.log("⏳ Esperando descarga del archivo...");
-        await new Promise(r => setTimeout(r, 25000)); 
+            await new Promise(r => setTimeout(r, 4000));
 
-        const files = fs.readdirSync(downloadPath);
-        let driveId = null;
+            // Click "More"
+            await page.evaluate(() => {
+                const more = Array.from(document.querySelectorAll('a, button'))
+                    .find(el => el.innerText.includes('More'));
+                if (more) more.click();
+            });
 
-        if (files.length > 0) {
-            const fileName = files[files.length - 1];
-            const filePath = path.join(downloadPath, fileName);
-            console.log(`✅ Archivo detectado: ${fileName}. Subiendo...`);
-            
-            driveId = await uploadToDrive(fileName, filePath);
-            
-            // Opcional: Limpiar archivo local después de subir
-            fs.unlinkSync(filePath);
+            await page.waitForSelector('#importExportLink', { visible: true });
+            await page.click('#importExportLink');
+
+            const radioLabel = 'xpath/.//label[contains(., "Export a table to a file")]';
+            await page.waitForSelector(radioLabel, { visible: true });
+            await page.click(radioLabel);
+
+            await page.waitForSelector('#tablePicker', { visible: true });
+            await page.select('#tablePicker', tabla.id);
+
+            await page.waitForSelector('#submitButton', { visible: true });
+            await page.evaluate(() => document.querySelector('#submitButton').click());
+
+            console.log(`⏳ Descargando ${tabla.nombre}...`);
+            await new Promise(r => setTimeout(r, 20000));
+
+            const files = fs.readdirSync(downloadPath);
+
+            const latestFile = files
+                .map(f => ({
+                    name: f,
+                    time: fs.statSync(path.join(downloadPath, f)).mtime.getTime()
+                }))
+                .sort((a, b) => b.time - a.time)[0];
+
+            if (latestFile) {
+                const oldPath = path.join(downloadPath, latestFile.name);
+                const newFileName = `${tabla.nombre}.csv`;
+                const newPath = path.join(downloadPath, newFileName);
+
+                if (fs.existsSync(newPath) && path.resolve(oldPath) !== path.resolve(newPath)) {
+                    fs.unlinkSync(newPath);
+                }
+                fs.renameSync(oldPath, newPath);
+
+                console.log(`✅ Archivo local guardado: ${newPath}`);
+
+                const driveId = await uploadToDrive(newFileName, newPath, tabla.id);
+
+                resultados.push({
+                    tabla: tabla.nombre,
+                    tableId: tabla.id,
+                    fileName: newFileName,
+                    localPath: newPath,
+                    driveId,
+                });
+            }
         }
 
         await browser.close();
 
-        // 2. Respuesta al cliente
         res.json({
             success: true,
-            message: "Proceso completado",
-            fileName: files.length > 0 ? files[files.length - 1] : null,
-            googleDriveId: driveId
+            message: "Todas las tablas exportadas correctamente",
+            resultados
         });
 
     } catch (error) {
         if (browser) await browser.close();
+
         console.error("❌ ERROR:", error.message);
+
         res.status(500).json({
             error: error.message,
-            url: page ? page.url() : null,
-            step: "Proceso de scraping/upload fallido"
+            url: page ? page.url() : null
         });
     }
 };
 
-// 3. Exportación
 module.exports = { scrapeTCI };
-
